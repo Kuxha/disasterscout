@@ -5,22 +5,23 @@ import hashlib
 import random
 
 from dotenv import load_dotenv
-from openai import OpenAI, RateLimitError, APIError
+import voyageai
 
+# Load .env so VOYAGE_API_KEY is available
 load_dotenv()
 
-# Official embedding model + dimension for this project
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
-# text-embedding-3-small has 1536 dimensions
-EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1536"))
+# ---- HARD-CODED VOYAGE CONFIG FOR HACKATHON ----
+EMBEDDING_MODEL = "voyage-2"
+EMBEDDING_DIM = 1024
 
-_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# VOYAGE_API_KEY must be set in .env
+_vo_client = voyageai.Client(api_key=os.getenv("VOYAGE_API_KEY"))
 
 
 def _fake_embedding(text: str, dim: int = EMBEDDING_DIM) -> list[float]:
     """
-    Deterministic fake embedding when we hit quota or API errors.
-    Same text -> same vector, so dedup still kind of works for the demo.
+    Deterministic fake embedding if Voyage errors.
+    Same text -> same vector, good enough for demo dedup.
     """
     text = (text or "").strip()
     if not text:
@@ -34,28 +35,31 @@ def _fake_embedding(text: str, dim: int = EMBEDDING_DIM) -> list[float]:
 
 def embed_text(text: str) -> list[float]:
     """
-    Get an embedding vector for the text.
-    Falls back to fake embeddings on quota / API errors.
+    Get an embedding vector for the text using Voyage.
+    Falls back to a deterministic fake embedding on error.
     """
     text = (text or "").strip()
     if not text:
         return [0.0] * EMBEDDING_DIM
 
     try:
-        resp = _client.embeddings.create(
+        print(f"[embed_text] Using Voyage model={EMBEDDING_MODEL}, dim={EMBEDDING_DIM}")
+        res = _vo_client.embed(
+            [text],
             model=EMBEDDING_MODEL,
-            input=text,
+            input_type="document",
+            output_dimension=EMBEDDING_DIM,
         )
-        return resp.data[0].embedding
+        emb = res.embeddings[0]
 
-    except RateLimitError as e:
-        print("[embed_text] RateLimitError, using fake embedding:", e)
-        return _fake_embedding(text)
+        if len(emb) != EMBEDDING_DIM:
+            print(
+                f"[embed_text] Warning: got dim={len(emb)} but EMBEDDING_DIM={EMBEDDING_DIM}, using fake embedding."
+            )
+            return _fake_embedding(text)
 
-    except APIError as e:
-        print("[embed_text] APIError, using fake embedding:", e)
-        return _fake_embedding(text)
+        return emb
 
     except Exception as e:
-        print("[embed_text] Unexpected error, using fake embedding:", e)
+        print("[embed_text] Voyage error, using fake embedding:", e)
         return _fake_embedding(text)
