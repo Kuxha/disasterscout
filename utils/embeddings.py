@@ -1,4 +1,4 @@
-# mcp_server/utils/embeddings.py
+# utils/embeddings.py
 
 import os
 import hashlib
@@ -9,7 +9,6 @@ from openai import OpenAI, RateLimitError, APIError
 
 load_dotenv()
 
-# ---- Config ----
 # Official embedding model + dimension for this project
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 # text-embedding-3-small has 1536 dimensions

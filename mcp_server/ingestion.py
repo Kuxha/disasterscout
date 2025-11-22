@@ -1,35 +1,51 @@
 # mcp_server/ingestion.py
 
-from datetime import datetime, UTC
-from typing import List, Dict, Any
+from typing import Dict, Any, List
+
+from mcp_server.dedup import upsert_incident_candidate
+from utils.embeddings import embed_text  # <-- use utils, not mcp_server.utils
 
 from utils.tavily_client import search_disaster
 from utils.mongo import incidents, now_utc
-from utils.embeddings import embed_text
 from utils.geocode import geocode_place
+
+
 
 def classify_category(description: str) -> str:
     """
     Very naive rule-based classifier for now.
     We can swap this for LLM classification later.
     """
-    text = description.lower()
+    text = (description or "").lower()
     if "shelter" in text or "evacuation center" in text:
         return "SHELTER"
-    if "trapped" in text or "stranded" in text or "help" in text or "rescue" in text:
+    if (
+        "trapped" in text
+        or "stranded" in text
+        or "help" in text
+        or "rescue" in text
+        or "sos" in text
+    ):
         return "SOS"
     return "INFO"
 
-def scan_region_once(region: str, topic: str) -> int:
+
+def scan_region_once(region: str, topic: str) -> Dict[str, Any]:
     """
-    One shot: fetch Tavily results, extract minimal info, geocode, embed, insert.
-    (Dedup will be added in the next step.)
-    Returns: number of incidents inserted.
+    One shot: fetch Tavily results, extract minimal info, geocode, embed, and
+    upsert into Mongo with hybrid dedup (semantic + geo).
+
+    Returns a summary dict:
+      {
+        "processed": <number of Tavily results considered>,
+        "upserts": <number of successful upserts>,
+      }
     """
     tavily_resp = search_disaster(region, topic)
-    results = tavily_resp.get("results", [])
+    results: List[Dict[str, Any]] = tavily_resp.get("results", [])
 
-    inserted_count = 0
+    processed = 0
+    upserts = 0
 
     for r in results:
         # Tavily's shape is usually {title, content, url, ...}
@@ -39,7 +55,6 @@ def scan_region_once(region: str, topic: str) -> int:
 
         # For now, description = title or first part of content
         description = title.strip() or content[:200]
-
         if not description:
             continue
 
@@ -60,31 +75,30 @@ def scan_region_once(region: str, topic: str) -> int:
         if not embedding:
             continue
 
-        now = now_utc()
-        doc = {
-            "description": description,
-            "category": category,
-            "topic": topic,
-            "region": region,
-            "status": "UNVERIFIED",
-            "report_count": 1,
-            "source_links": [url] if url else [],
-            "created_at": now,
-            "last_seen_at": now,
-            "last_verified_at": None,
-            "location": {
-                "type": "Point",
-                "coordinates": [lon, lat]
-            },
-            "embedding": embedding,
-        }
+        # Hybrid dedup: either updates an existing incident or inserts a new one
+        _id = upsert_incident_candidate(
+            incidents,
+            description=description,
+            category=category,
+            region=region,
+            lat=lat,
+            lon=lon,
+            embedding=embedding,
+            source_link=url,
+        )
 
-        incidents.insert_one(doc)
-        inserted_count += 1
+        processed += 1
+        upserts += 1  # every successful upsert is a write (insert or update)
 
-    return inserted_count
+    return {
+        "processed": processed,
+        "upserts": upserts,
+    }
+
 
 if __name__ == "__main__":
     # quick manual test
-    n = scan_region_once("Brooklyn, NY", "flood")
-    print(f"Inserted {n} incidents")
+    summary = scan_region_once("Brooklyn, NY", "flood")
+    print(
+        f"scan_region_once -> processed={summary['processed']} upserts={summary['upserts']}"
+    )
