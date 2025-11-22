@@ -1,0 +1,52 @@
+# -------------------------
+# Python
+# -------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.DS_Store
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# -------------------------
+# Environment Variables
+# -------------------------
+.env
+*.env
+
+# -------------------------
+# VSCode / IDE
+# -------------------------
+.vscode/
+.idea/
+
+# -------------------------
+# Logs
+# -------------------------
+*.log
+logs/
+
+# -------------------------
+# Byte-compiled / cache
+# -------------------------
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# -------------------------
+# Node (if frontend folder added later)
+# -------------------------
+node_modules/
+
+# -------------------------
+# System files
+# -------------------------
+Thumbs.db
