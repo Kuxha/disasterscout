@@ -1,0 +1,23 @@
+# mcp_agent.config.yaml
+
+name: disasterscout
+description: "DisasterScout FastMCP server for crisis mapping"
+
+# We’re deploying an MCP *app* that exposes a MCP server
+execution_engine: asyncio
+
+mcp:
+  servers:
+    disasterscout:
+      # This is how the MCP server is launched in the container
+      command: "python"
+      args: ["-m", "mcp_server.server"]
+
+logger:
+  transports: [console]
+  level: info
+
+env:
+  - name: OPENAI_API_KEY
+  - name: TAVILY_API_KEY
+  - name: MONGODB_URI
