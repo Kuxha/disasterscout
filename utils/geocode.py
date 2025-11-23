@@ -1,22 +1,47 @@
 # utils/geocode.py
-
 from geopy.geocoders import Nominatim
-from functools import lru_cache
+from openai import OpenAI
+import os
 
-_geolocator = Nominatim(user_agent="disasterscout")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+geolocator = Nominatim(user_agent="disasterscout")
 
-@lru_cache(maxsize=256)
-def geocode_place(place_string: str, region: str | None = None):
-    """
-    Return (lon, lat) or None if not found.
-    """
-    if region:
-        query = f"{place_string}, {region}"
-    else:
-        query = place_string
-
-    location = _geolocator.geocode(query)
-    if not location:
+def refine_place(text: str) -> str | None:
+    """Normalize+refine place names using OpenAI."""
+    try:
+        prompt = f"""
+Extract the MOST specific location from this text.
+Examples:
+"near Shore Parkway Promenade in Brooklyn" → "Shore Parkway Promenade, Brooklyn, NY"
+If none, return null.
+Text: "{text}"
+"""
+        r = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        place = r.choices[0].message.content.strip()
+        if place.lower() in ["none", "null"]:
+            return None
+        return place
+    except Exception as e:
+        print("[refine_place] error:", e)
         return None
 
-    return (location.longitude, location.latitude)
+
+def geocode_place(place: str, region: str):
+    """
+    Geocode a refined place. If it fails, fallback to region-only.
+    """
+    try:
+        query = f"{place}, {region}"
+        location = geolocator.geocode(query, exactly_one=True, timeout=5)
+
+        if location:
+            return (location.longitude, location.latitude)
+        else:
+            print(f"[geocode_place] no result for '{query}'")
+            return None
+    except Exception as e:
+        print("[geocode_place] error:", e)
+        return None
