@@ -1,40 +1,54 @@
 # utils/geocode.py
-from geopy.geocoders import Nominatim
-from openai import OpenAI
-import os
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+from geopy.geocoders import Nominatim
+from typing import Optional
+
 geolocator = Nominatim(user_agent="disasterscout")
 
-def refine_place(text: str) -> str | None:
-    """Normalize+refine place names using OpenAI."""
-    try:
-        prompt = f"""
-Extract the MOST specific location from this text.
-Examples:
-"near Shore Parkway Promenade in Brooklyn" → "Shore Parkway Promenade, Brooklyn, NY"
-If none, return null.
-Text: "{text}"
-"""
-        r = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-        )
-        place = r.choices[0].message.content.strip()
-        if place.lower() in ["none", "null"]:
-            return None
-        return place
-    except Exception as e:
-        print("[refine_place] error:", e)
-        return None
+
+def refine_place(place: Optional[str], region: str) -> str:
+    """
+    Normalize a place name:
+
+    - if place is None -> fall back to region
+    - strip stray quotes
+    - avoid duplicating region
+    - don't keep appending region when the place is already country-scoped
+    """
+    if not place:
+        return region
+
+    cleaned = place.strip().strip('"').strip("'")
+
+    # If it already contains the region name, just use it
+    if region.lower() in cleaned.lower():
+        return cleaned
+
+    # If it already contains a country (e.g. 'Vietnam'), don't append region again
+    if any(word in cleaned.lower() for word in ["vietnam", "philippines", "japan", "usa", "united states"]):
+        return cleaned
+
+    # Otherwise bias it with the region
+    return f"{cleaned}, {region}"
 
 
-def geocode_place(place: str, region: str):
+def geocode_place(place: str, region: Optional[str] = None):
     """
-    Geocode a refined place. If it fails, fallback to region-only.
+    Geocode a place, optionally biased by region.
+
+    - Strip stray quotes.
+    - If region is empty/None, query with just the place.
+    - If region is already part of the place string, don't append it again.
     """
     try:
-        query = f"{place}, {region}"
+        cleaned_place = place.strip().strip('"').strip("'")
+        region = (region or "").strip()
+
+        if region and region.lower() not in cleaned_place.lower():
+            query = f"{cleaned_place}, {region}"
+        else:
+            query = cleaned_place
+
         location = geolocator.geocode(query, exactly_one=True, timeout=5)
 
         if location:

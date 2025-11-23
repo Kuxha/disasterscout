@@ -23,6 +23,15 @@
 
 <body>
 
+    <div id="controls" style="padding:8px; background:#fff; position:absolute; z-index:1000;">
+        <label>
+            Region:
+            <input id="region-input" type="text" value="Brooklyn, NY" style="width:220px;">
+        </label>
+        <button id="region-go">Go</button>
+    </div>
+
+
     <div id="map"></div>
 
     <script>
@@ -31,6 +40,8 @@
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxZoom: 19
         }).addTo(map);
+
+        let incidentsLayer = null;
 
         function jitterCoord(value, magnitude) {
             return value + (Math.random() - 0.5) * magnitude;
@@ -42,12 +53,15 @@
             return "blue";
         }
 
-        // FIXED — this endpoint now exists
-        fetch('/api/incidents_geojson')
-            .then(res => res.json())
-            .then(data => {
+        function addIncidents(features) {
+            // Remove old layer if exists
+            if (incidentsLayer) {
+                map.removeLayer(incidentsLayer);
+            }
 
-                L.geoJSON(data, {
+            incidentsLayer = L.geoJSON(
+                { type: "FeatureCollection", features },
+                {
                     pointToLayer: function (feature, latlng) {
                         const cat = feature.properties.category || "INFO";
                         const color = categoryColor(cat);
@@ -64,7 +78,6 @@
                             fillOpacity: 0.8
                         });
                     },
-
                     onEachFeature: function (feature, layer) {
                         const p = feature.properties;
                         const links = (p.source_links || [])
@@ -72,28 +85,58 @@
                             .join(" | ");
 
                         layer.bindPopup(`
-                    <strong>${p.category}</strong><br>
-                    ${p.description}<br>
-                    <small>${p.region}</small><br>
-                    Reports: ${p.report_count}<br>
-                    ${links}
-                `);
+          <strong>${p.category}</strong><br/>
+          ${p.description}<br/>
+          <small>${p.region}</small><br/>
+          Reports: ${p.report_count}<br/>
+          ${links}
+        `);
                     }
-                }).addTo(map);
+                }
+            ).addTo(map);
+        }
 
-                const legend = L.control({ position: 'bottomright' });
-                legend.onAdd = function () {
-                    const div = L.DomUtil.create('div', 'legend');
-                    div.innerHTML = `
-                <div><span style="display:inline-block;width:12px;height:12px;background:red;border-radius:50%;margin-right:5px;"></span> SOS</div>
-                <div><span style="display:inline-block;width:12px;height:12px;background:green;border-radius:50%;margin-right:5px;"></span> Shelter</div>
-                <div><span style="display:inline-block;width:12px;height:12px;background:blue;border-radius:50%;margin-right:5px;"></span> Info</div>
-            `;
-                    return div;
-                };
-                legend.addTo(map);
-            });
+        async function loadRegion(region) {
+            const res = await fetch(`/api/incidents?region=${encodeURIComponent(region)}`);
+            if (!res.ok) {
+                console.error("API error", await res.text());
+                return;
+            }
+            const data = await res.json();
+            addIncidents(data.features || []);
+        }
+
+        // Legend
+        const legend = L.control({ position: 'bottomright' });
+        legend.onAdd = function () {
+            const div = L.DomUtil.create('div', 'legend');
+            div.style.background = 'white';
+            div.style.padding = '8px';
+            div.innerHTML = `
+    <div><span style="display:inline-block;width:12px;height:12px;background:red;border-radius:50%;margin-right:5px;"></span> SOS</div>
+    <div><span style="display:inline-block;width:12px;height:12px;background:green;border-radius:50%;margin-right:5px;"></span> Shelter</div>
+    <div><span style="display:inline-block;width:12px;height:12px;background:blue;border-radius:50%;margin-right:5px;"></span> Info</div>
+  `;
+            return div;
+        };
+        legend.addTo(map);
+
+        // Wire up controls
+        const params = new URLSearchParams(window.location.search);
+        const initialRegion = params.get("region") || "Brooklyn, NY";
+        document.getElementById("region-input").value = initialRegion;
+        loadRegion(initialRegion);
+
+        document.getElementById("region-go").addEventListener("click", () => {
+            const region = document.getElementById("region-input").value.trim();
+            if (!region) return;
+            // also update URL so you can share the link
+            const newUrl = `${window.location.pathname}?region=${encodeURIComponent(region)}`;
+            window.history.replaceState({}, "", newUrl);
+            loadRegion(region);
+        });
     </script>
+
 
 </body>
 
