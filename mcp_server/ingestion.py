@@ -16,24 +16,105 @@ from utils.place_extraction import extract_place_from_text
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
-def classify_category(description: str) -> str:
+def classify_category_keyword(description: str, full_text: str) -> str:
     """
-    Very naive rule-based classifier for now.
-    We can swap this for LLM classification later.
+    Simple fallback classifier using keywords
+    in case the LLM call fails.
     """
-    text = (description or "").lower()
-    if "shelter" in text or "evacuation center" in text:
+    text = (description or "" + " " + full_text or "").lower()
+
+    if any(
+        kw in text
+        for kw in [
+            "shelter",
+            "evacuation center",
+            "evacuation centre",
+            "evacuees",
+            "temporary housing",
+            "relief camp",
+        ]
+    ):
         return "SHELTER"
-    if (
-        "trapped" in text
-        or "stranded" in text
-        or "help" in text
-        or "rescue" in text
-        or "sos" in text
+
+    if any(
+        kw in text
+        for kw in [
+            "trapped",
+            "stranded",
+            "missing",
+            "rescued",
+            "in need of help",
+            "urgent help",
+            "sos",
+            "call for help",
+            "people cut off",
+        ]
     ):
         return "SOS"
+
     return "INFO"
 
+
+def classify_category(description: str, full_text: str, region: str) -> str:
+    """
+    Use OpenAI to classify an incident into:
+      - SOS     (people in danger, needing help)
+      - SHELTER (places/resources where people can go)
+      - INFO    (general situation / damage / updates)
+    """
+    try:
+        system_msg = """
+You classify disaster-related news into categories:
+
+- "SOS": people in danger or needing help.
+  Examples: stranded residents, missing people, rescue operations,
+  urgent medical needs, calls for urgent assistance.
+
+- "SHELTER": locations or services where people can go for safety or aid.
+  Examples: shelters, evacuation centers, relief camps, places distributing
+  food/water, temporary housing.
+
+- "INFO": general information about the disaster, damage, closures,
+  forecasts, government announcements, etc., that is not a direct SOS
+  or a specific shelter location.
+
+Return ONLY a JSON object like:
+{
+  "category": "SOS" | "SHELTER" | "INFO"
+}
+"""
+
+        user_msg = f"""
+Region: {region}
+
+Title/summary:
+{description}
+
+Full text:
+{full_text}
+"""
+
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0,
+            max_tokens=50,
+        )
+
+        raw = (resp.choices[0].message.content or "").strip()
+        data = json.loads(raw)
+
+        cat = (data.get("category") or "INFO").upper()
+        if cat not in {"SOS", "SHELTER", "INFO"}:
+            return classify_category_keyword(description, full_text)
+        return cat
+
+    except Exception as e:
+        print("[classify_category] error, falling back to keyword rules:", e)
+        return classify_category_keyword(description, full_text)
 
 def is_relevant_incident(text: str, region: str) -> bool:
     """
@@ -90,12 +171,9 @@ def scan_region_once(region: str, topic: str) -> Dict[str, Any]:
         content = r.get("content") or ""
         url = r.get("url") or ""
 
-        # For now, description = title or first part of content
         description = title.strip() or content[:200]
         if not description:
             continue
-
-        category = classify_category(description)
 
         # Full text (usually Tavily Extract article body)
         full_text = (title + "\n\n" + content).strip()
@@ -103,6 +181,9 @@ def scan_region_once(region: str, topic: str) -> Dict[str, Any]:
         # ---- 1) Relevance filter using OpenAI ----
         if not is_relevant_incident(full_text, region):
             continue
+
+        # ---- 1b) Category classification (SOS / SHELTER / INFO) ----
+        category = classify_category(description, full_text, region)
 
         # ---- 2) Place extraction + refinement ----
         llm_place = extract_place_from_text(full_text)
