@@ -2,6 +2,7 @@
 
 from typing import Dict, Any, List
 import os
+import json
 
 from openai import OpenAI
 
@@ -12,16 +13,20 @@ from utils.mongo import incidents
 from utils.geocode import geocode_place, refine_place
 from utils.place_extraction import extract_place_from_text
 
-# OpenAI client for relevance filtering
+# OpenAI client for relevance + classification
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+
+# -------------------------------------------------------------------------
+# Category classification (SOS / SHELTER / INFO)
+# -------------------------------------------------------------------------
 
 def classify_category_keyword(description: str, full_text: str) -> str:
     """
     Simple fallback classifier using keywords
     in case the LLM call fails.
     """
-    text = (description or "" + " " + full_text or "").lower()
+    text = f"{description or ''} {full_text or ''}".lower()
 
     if any(
         kw in text
@@ -32,6 +37,8 @@ def classify_category_keyword(description: str, full_text: str) -> str:
             "evacuees",
             "temporary housing",
             "relief camp",
+            "safe house",
+            "refugee camp",
         ]
     ):
         return "SHELTER"
@@ -48,6 +55,8 @@ def classify_category_keyword(description: str, full_text: str) -> str:
             "sos",
             "call for help",
             "people cut off",
+            "cry for help",
+            "desperate",
         ]
     ):
         return "SOS"
@@ -82,7 +91,7 @@ Return ONLY a JSON object like:
 {
   "category": "SOS" | "SHELTER" | "INFO"
 }
-"""
+        """.strip()
 
         user_msg = f"""
 Region: {region}
@@ -92,7 +101,7 @@ Title/summary:
 
 Full text:
 {full_text}
-"""
+        """.strip()
 
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -116,6 +125,11 @@ Full text:
         print("[classify_category] error, falling back to keyword rules:", e)
         return classify_category_keyword(description, full_text)
 
+
+# -------------------------------------------------------------------------
+# Relevance filter (keep only disaster-ish items for this region)
+# -------------------------------------------------------------------------
+
 def is_relevant_incident(text: str, region: str) -> bool:
     """
     Use OpenAI to keep only disaster / emergency / disruption items
@@ -134,7 +148,8 @@ Does this text describe a disaster, hazard, weather event,
 emergency, or critical infrastructure disruption that affects this region?
 
 Answer strictly with "YES" or "NO".
-"""
+        """.strip()
+
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
@@ -143,11 +158,16 @@ Answer strictly with "YES" or "NO".
         )
         answer = (resp.choices[0].message.content or "").strip().upper()
         return answer.startswith("Y")
+
     except Exception as e:
         print("[is_relevant_incident] error:", e)
         # On error, be conservative and keep it, so ingestion doesn't silently die
         return True
 
+
+# -------------------------------------------------------------------------
+# Main ingestion pipeline
+# -------------------------------------------------------------------------
 
 def scan_region_once(region: str, topic: str) -> Dict[str, Any]:
     """
@@ -156,8 +176,8 @@ def scan_region_once(region: str, topic: str) -> Dict[str, Any]:
 
     Returns a summary dict:
     {
-        "processed": <number of Tavily results considered>,
-        "upserts": <number of successful upserts>,
+      "processed": <number of Tavily results considered>,
+      "upserts": <number of successful upserts>,
     }
     """
     tavily_resp = search_disaster(region, topic)
@@ -203,7 +223,6 @@ def scan_region_once(region: str, topic: str) -> Dict[str, Any]:
             # If we still can't geocode, skip this incident
             continue
 
-
         lon, lat = geo
 
         # ---- 4) Embedding ----
@@ -232,13 +251,9 @@ def scan_region_once(region: str, topic: str) -> Dict[str, Any]:
     }
 
 
-# if __name__ == "__main__":
-#     # quick manual test
-#     result = scan_region_once("Brooklyn, NY", "flood")
-#     print(
-#         f"scan_region_once -> processed={result['processed']} upserts={result['upserts']}"
-#     )
-
+# -------------------------------------------------------------------------
+# CLI entrypoint
+# -------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import sys
@@ -256,7 +271,10 @@ if __name__ == "__main__":
         region_arg = "Brooklyn, NY"
         topic_arg = "flood"
 
-    print(f"[ingestion] running scan_region_once(region={region_arg!r}, topic={topic_arg!r})")
+    print(
+        f"[ingestion] running scan_region_once(region={region_arg!r}, "
+        f"topic={topic_arg!r})"
+    )
     result = scan_region_once(region_arg, topic_arg)
     print(
         f"scan_region_once(region={region_arg!r}, topic={topic_arg!r}) "
