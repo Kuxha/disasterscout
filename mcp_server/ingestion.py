@@ -24,10 +24,11 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 def classify_category_keyword(description: str, full_text: str) -> str:
     """
     Simple fallback classifier using keywords
-    in case the LLM call fails.
+    in case the LLM call fails or is ambiguous.
     """
-    text = f"{description or ''} {full_text or ''}".lower()
+    text = ((description or "") + " " + (full_text or "")).lower()
 
+    # Shelter-like language
     if any(
         kw in text
         for kw in [
@@ -37,12 +38,16 @@ def classify_category_keyword(description: str, full_text: str) -> str:
             "evacuees",
             "temporary housing",
             "relief camp",
-            "safe house",
-            "refugee camp",
+            "relief center",
+            "relief centre",
+            "emergency shelter",
+            "displacement site",
+            "safe shelter",
         ]
     ):
         return "SHELTER"
 
+    # SOS / people in danger
     if any(
         kw in text
         for kw in [
@@ -55,14 +60,15 @@ def classify_category_keyword(description: str, full_text: str) -> str:
             "sos",
             "call for help",
             "people cut off",
-            "cry for help",
-            "desperate",
+            "plea for help",
+            "rescue operation",
+            "evacuated from",
+            "swept away",
         ]
     ):
         return "SOS"
 
     return "INFO"
-
 
 def classify_category(description: str, full_text: str, region: str) -> str:
     """
