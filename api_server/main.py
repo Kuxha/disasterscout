@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from utils.mongo import incidents
-from mcp_server.ingestion import scan_region_once  # <-- IMPORTANT: new import
+from mcp_server.ingestion import scan_region_once  # Tavily + Mongo ingestion
 
 app = FastAPI(title="DisasterScout API")
 
@@ -120,11 +120,11 @@ def get_incidents_near(
 
 def _compute_category_stats(region: str, topic: str) -> Dict[str, Dict[str, int]]:
     """
-    Aggregate counts by (category, status) for a region (and topic, if present).
-    Returns dict like: { "SOS": {"UNVERIFIED": 2}, "SHELTER": {"UNVERIFIED": 1}, ... }
+    Aggregate counts by (category, status) for a region.
+    Right now this groups by region only; topic is just for labelling in the summary.
     """
     match_stage: Dict[str, Any] = {"region": region}
-    # If your docs store topic, you can uncomment this:
+    # If your docs store topic and you want per-topic stats only, you can later do:
     # match_stage["topic"] = topic
 
     pipeline: List[Dict[str, Any]] = [
@@ -176,7 +176,6 @@ def _build_guidance_text(
     sos = sum(stats.get("SOS", {}).values())
     shelter = sum(stats.get("SHELTER", {}).values())
     info = sum(stats.get("INFO", {}).values())
-
     other = sum(
         sum(v.values())
         for k, v in stats.items()
@@ -197,20 +196,20 @@ def _build_guidance_text(
     if sos > 0:
         lines.append(
             f"- There are {sos} SOS / distress incidents (red markers). "
-            "Avoid these areas if at all possible, and do not walk or drive through floodwater."
+            "Avoid these areas if at all possible and follow instructions from local emergency services."
         )
 
     if shelter > 0:
         lines.append(
             f"- There are {shelter} shelter / resource locations (green markers). "
-            "If it is safe and local authorities advise evacuation, use the map to find the nearest green marker "
-            "and move there via main roads and high ground."
+            "If authorities advise evacuation or relocation, use the map to find the nearest green marker "
+            "and move there only if it is safe to do so."
         )
 
     if info > 0:
         lines.append(
             f"- There are {info} information-only reports (blue markers). "
-            "These describe damage, flooding, closures, or forecasts. Use them to understand how conditions are evolving."
+            "These describe damage, hazard conditions, closures, or forecasts. Use them to understand how the situation is evolving."
         )
 
     if sos == 0 and shelter == 0:
@@ -230,34 +229,85 @@ class ChatQuery(BaseModel):
     message: str
 
 
+# Supported hazard keywords (very simple heuristic)
+HAZARD_KEYWORDS: Dict[str, List[str]] = {
+    "flood": ["flood", "flooding"],
+    "earthquake": ["earthquake", "quake"],
+    "storm": ["storm", "cyclone", "hurricane", "typhoon"],
+    "wildfire": ["wildfire", "bushfire", "forest fire"],
+}
+
+
+def _detect_topic(lower: str) -> Optional[str]:
+    """
+    Return a canonical topic string ('flood', 'earthquake', etc.)
+    if we see any of the known keywords in the message.
+    """
+    for topic, keywords in HAZARD_KEYWORDS.items():
+        for kw in keywords:
+            if kw in lower:
+                return topic
+    return None
+
+
+def _extract_region(raw: str, lower: str) -> str:
+    """
+    Very simple heuristic: take whatever comes after the last ' in ' as the region.
+    If that fails, fall back to the whole message, and then to 'Brooklyn, NY'.
+    """
+    region: Optional[str] = None
+
+    idx = lower.rfind(" in ")
+    if idx != -1:
+        region = raw[idx + 4 :].strip(" ,.!?")
+
+    if not region:
+        region = raw.strip()
+
+    # Avoid obviously bad regions
+    if not region:
+        region = "Brooklyn, NY"
+
+    return region
+
+
 @app.post("/api/chat_query")
 def chat_query(payload: ChatQuery) -> Dict[str, Any]:
     """
     Chat-style endpoint.
 
     Expected messages like:
-      - "Flood in Brooklyn, NY"
-      - "Flood in Qui Nhon, Vietnam"
+    - "Flood in Brooklyn, NY"
+    - "Flood in Qui Nhon, Vietnam"
+    - "Earthquake in Tokyo"
+    - "Storm in Mumbai"
+    - "Wildfire in California"
 
     Behaviour:
-      * If the message clearly asks about a flood in a place:
-          - refresh data with scan_region_once
-          - compute stats
-          - build brief + guidance
-      * If the message is just "hi" / random text:
-          - return a short help message and no map_url
+    * If the message contains a known hazard keyword:
+        - detect topic
+        - extract region
+        - refresh data with scan_region_once
+        - compute stats
+        - build brief + guidance
+    * If the message is just "hi" / random text with no hazard keyword:
+        - return a short help message and no map_url
     """
     raw = payload.message.strip()
     lower = raw.lower()
 
-    # If the user is not clearly asking about a flood, just show help text.
-    if "flood" not in lower:
+    topic = _detect_topic(lower)
+    if not topic:
+        # No recognised hazard keyword: just show usage help.
         help_text = (
-            "I can help you understand flood situations using live news and the map.\n\n"
+            "I can help you understand disaster situations using live news and the map.\n\n"
             "Try messages like:\n"
             "- Flood in Brooklyn, NY\n"
             "- Flood in Bay Ridge, Brooklyn, NY\n"
-            "- Flood in Qui Nhon, Vietnam"
+            "- Flood in Qui Nhon, Vietnam\n"
+            "- Earthquake in Tokyo\n"
+            "- Storm in Mumbai\n"
+            "- Wildfire in California"
         )
         return {
             "ok": True,
@@ -268,18 +318,7 @@ def chat_query(payload: ChatQuery) -> Dict[str, Any]:
             "map_url": None,
         }
 
-    topic = "flood"
-
-    # Default region is the whole message, then try to strip leading "flood in"
-    region = raw
-    for prefix in ["flood in", "Flood in", "FLOOD IN"]:
-        if raw.startswith(prefix):
-            region = raw[len(prefix) :].strip(" ,.!?")
-            break
-
-    # If we still did not get a region, fall back to something sensible
-    if not region:
-        region = "Brooklyn, NY"
+    region = _extract_region(raw, lower)
 
     # 1) Refresh data for this region/topic
     scan_summary = scan_region_once(region, topic)
