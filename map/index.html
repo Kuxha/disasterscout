@@ -260,18 +260,11 @@
                 return;
             }
 
-            // NEW: keep track of SOS centers so we can draw danger zones
-            const sosCenters = [];
-
             const geoLayer = L.geoJSON(featureCollection, {
                 pointToLayer: function (feature, latlng) {
-                    const cat = (feature.properties && feature.properties.category) || "INFO";
+                    const cat =
+                        (feature.properties && feature.properties.category) || "INFO";
                     const color = categoryColor(cat);
-
-                    // record the true lat/lng for SOS markers
-                    if (cat === "SOS") {
-                        sosCenters.push(latlng);
-                    }
 
                     // Jitter slightly so stacked points are visible
                     const jittered = L.latLng(
@@ -322,8 +315,6 @@
             });
 
             geoLayer.addTo(incidentLayer);
-
-
 
             if (fitBounds) {
                 try {
@@ -432,7 +423,7 @@
         };
         legend.addTo(map);
 
-        // --- Chat logic (unchanged except it now gets richer summary from backend) ---
+        // --- Chat logic ---
 
         const chatWindow = document.getElementById("chatWindow");
         const chatForm = document.getElementById("chatForm");
@@ -488,19 +479,25 @@
                 })
                 .then(function (data) {
                     if (!data.ok) {
-                        addChatMessage("Assistant", data.error || "Query failed.", null);
+                        addChatMessage(
+                            "Assistant",
+                            data.error || "Query failed.",
+                            null
+                        );
                         return;
                     }
 
                     const summary = data.summary || "No summary available.";
                     const region = data.region || "";
-                    const mapUrl = data.map_url || "";
 
                     let extraHtml = "";
-                    if (mapUrl) {
+                    if (region) {
+                        // IMPORTANT: keep region locally and do not navigate away.
+                        // The click handler will call loadRegion(region).
                         extraHtml =
-                            '<button class="open-map-btn" data-map-url="' +
-                            mapUrl +
+                            '<button class="open-map-btn" ' +
+                            'data-region="' +
+                            region +
                             '">Open map for ' +
                             region +
                             "</button>";
@@ -524,17 +521,20 @@
                 return;
             }
             if (target.classList.contains("open-map-btn")) {
-                const url = target.getAttribute("data-map-url");
-                if (url) {
-                    // Open map in a new tab so the chat stays intact
-                    window.open(url, "_blank");
+                const region = target.getAttribute("data-region");
+                if (region) {
+                    // Update dropdown if possible
+                    const options = Array.from(regionSelect.options);
+                    const match = options.find((opt) => opt.value === region);
+                    if (match) {
+                        regionSelect.value = region;
+                    }
+                    // Recenter map to that region, but DO NOT reload page
+                    loadRegion(region);
                 }
             }
         });
-
     </script>
-
-
 </body>
 
 </html>
